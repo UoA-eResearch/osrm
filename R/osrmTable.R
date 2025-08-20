@@ -111,60 +111,98 @@ osrmTable <- function(src,
   if (!missing(loc)) {
     loc <- input_table(x = loc, id = "loc")
     dst_r <- src_r <- loc
+    url <- paste0(url, encode_coords(x = loc, osrm.server = osrm.server), "?")
   } else {
     src_r <- input_table(x = src, id = "src")
     dst_r <- input_table(x = dst, id = "dst")
     loc <- rbind(src_r, dst_r)
+    url <- paste0(
+      url,
+      encode_coords(x = loc, osrm.server),
+      paste0(
+        "?sources=",
+        paste(0:(nrow(src_r) - 1), collapse = ";"),
+        "&destinations=",
+        paste(nrow(src_r):(nrow(loc) - 1), collapse = ";")
+      ),
+      "&"
+    )
   }
 
-  # Build coordinates array for POST body
-  coordinates_json <- paste0("[", 
-    paste(sapply(1:nrow(loc), function(i) {
-      paste0("[", loc$lon[i], ",", loc$lat[i], "]")
-    }), collapse = ","),
-    "]")
-
-  # Build annotations JSON
-  annotations_json <- if (length(measure) == 1) {
-    paste0('"', measure, '"')
-  } else {
-    paste0('["', paste(measure, collapse = '","'), '"]')
+  # adding exclude parameter
+  if (!missing(exclude)) {
+    url <- paste0(url, "exclude=", exclude, "&")
   }
-
-  # Build POST body JSON
-  json_parts <- c(
-    paste0('"coordinates":', coordinates_json),
-    paste0('"annotations":', annotations_json),
-    '"generate_hints":false'
+  # adding measure parameter
+  url <- paste0(
+    url,
+    "annotations=",
+    paste0(measure, collapse = ","),
+    "&generate_hints=false"
   )
 
-  # Add sources and destinations if using separate src/dst
-  if (using_src_dst) {
-    sources_json <- paste0("[", paste(0:(nrow(src_r) - 1), collapse = ","), "]")
-    destinations_json <- paste0("[", paste(nrow(src_r):(nrow(loc) - 1), collapse = ","), "]")
-    json_parts <- c(json_parts, 
-                   paste0('"sources":', sources_json),
-                   paste0('"destinations":', destinations_json))
-  }
+  # Check URL length and use POST if too long (>4000 chars to be safe)
+  encoded_url <- utils::URLencode(url)
+  use_post <- nchar(encoded_url) > 4000
 
-  # Add exclude parameter if provided
-  if (!missing(exclude)) {
-    json_parts <- c(json_parts, paste0('"exclude":"', exclude, '"'))
-  }
-
-  # Combine into final JSON
-  json_body <- paste0("{", paste(json_parts, collapse = ","), "}")
-
-  # print(json_body)
   e <- try(
     {
       req_handle <- curl::new_handle(verbose = FALSE)
-      curl::handle_setopt(req_handle, 
-                         useragent = "osrm_R_package",
-                         customrequest = "POST",
-                         postfields = json_body)
-      curl::handle_setheaders(req_handle, "Content-Type" = "application/json")
-      r <- curl::curl_fetch_memory(url, handle = req_handle)
+      curl::handle_setopt(req_handle, useragent = "osrm_R_package")
+      
+      if (use_post) {
+        # Use POST for long URLs to avoid server limits
+        post_url <- base_url(osrm.server, osrm.profile, "table")
+        # Remove trailing slash for POST requests
+        post_url <- sub("/$", "", post_url)
+        
+        # Build coordinates array for POST body
+        coordinates_json <- paste0("[", 
+          paste(sapply(1:nrow(loc), function(i) {
+            paste0("[", loc$lon[i], ",", loc$lat[i], "]")
+          }), collapse = ","),
+          "]")
+
+        # Build annotations JSON
+        annotations_json <- if (length(measure) == 1) {
+          paste0('"', measure, '"')
+        } else {
+          paste0('["', paste(measure, collapse = '","'), '"]')
+        }
+
+        # Build POST body JSON
+        json_parts <- c(
+          paste0('"coordinates":', coordinates_json),
+          paste0('"annotations":', annotations_json),
+          '"generate_hints":false'
+        )
+
+        # Add sources and destinations if using separate src/dst
+        if (using_src_dst) {
+          sources_json <- paste0("[", paste(0:(nrow(src_r) - 1), collapse = ","), "]")
+          destinations_json <- paste0("[", paste(nrow(src_r):(nrow(loc) - 1), collapse = ","), "]")
+          json_parts <- c(json_parts, 
+                         paste0('"sources":', sources_json),
+                         paste0('"destinations":', destinations_json))
+        }
+
+        # Add exclude parameter if provided
+        if (!missing(exclude)) {
+          json_parts <- c(json_parts, paste0('"exclude":"', exclude, '"'))
+        }
+
+        # Combine into final JSON
+        json_body <- paste0("{", paste(json_parts, collapse = ","), "}")
+        
+        curl::handle_setopt(req_handle, 
+                           customrequest = "POST",
+                           postfields = json_body)
+        curl::handle_setheaders(req_handle, "Content-Type" = "application/json")
+        r <- curl::curl_fetch_memory(utils::URLencode(post_url), handle = req_handle)
+      } else {
+        # Use original GET method for shorter URLs
+        r <- curl::curl_fetch_memory(encoded_url, handle = req_handle)
+      }
     },
     silent = TRUE
   )
